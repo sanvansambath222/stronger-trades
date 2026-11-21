@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import TickerBar from "@/components/TickerBar";
 import PriceChart from "@/components/PriceChart";
 import AISignalCard from "@/components/AISignalCard";
@@ -45,16 +45,17 @@ export default function Dashboard() {
     }, []);
 
     const refresh = () => setRefreshKey((k) => k + 1);
+    const engineRef = useRef(engine);
 
     const loadAI = useCallback(async (forceEngine) => {
-        const useEngine = forceEngine || engine;
+        const useEngine = forceEngine || engineRef.current;
         // Only meaningful when running council; ignored otherwise by backend
         const useRiskTeam = useEngine === "council" && withRiskTeam;
         const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         setAiLoading(true);
         setAiError(null);
         setLiveProgress([]);
-        if (forceEngine) { setAiSignal(null); setEngine(forceEngine); }
+        if (forceEngine) { setAiSignal(null); setEngine(forceEngine); engineRef.current = forceEngine; }
         const poll = useEngine !== "rule" || autoUpgrade
             ? window.setInterval(() => {
                 fetchAIProgress(runId).then((d) => setLiveProgress(d.items || [])).catch(() => {});
@@ -70,7 +71,7 @@ export default function Dashboard() {
             if (poll) window.clearInterval(poll);
             setAiLoading(false);
         }
-    }, [interval, engine, autoUpgrade, newsBlackout, blackoutWindow, withRiskTeam]);
+    }, [interval, autoUpgrade, newsBlackout, blackoutWindow, withRiskTeam]);
 
     useEffect(() => {
         document.title = "AURUM TERMINAL — XAU/USD Pro Analytics";

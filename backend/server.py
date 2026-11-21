@@ -2080,6 +2080,34 @@ async def _fetch_economic_calendar() -> List[dict]:
     cached = _cache_get("ff_calendar", ttl_seconds=1800)
     if cached is not None:
         return cached
+    async with _FF_LOCK:
+        cached = _cache_get("ff_calendar", ttl_seconds=1800)
+        if cached is not None:
+            return cached
+        if _cache_get("ff_calendar_fail", ttl_seconds=600) is not None:
+            return await _ff_fallback()
+        events = await _fetch_economic_calendar_remote()
+        if events is None:
+            _cache_set("ff_calendar_fail", True)
+            return await _ff_fallback()
+        _cache_set("ff_calendar", events)
+        await db.calendar_cache.update_one({"_id": "ff"}, {"$set": {"events": events}}, upsert=True)
+        return events
+
+
+_FF_LOCK = asyncio.Lock()
+
+
+async def _ff_fallback() -> List[dict]:
+    stale = _cache_get_stale("ff_calendar")
+    if stale:
+        return stale
+    doc = await db.calendar_cache.find_one({"_id": "ff"})
+    return (doc or {}).get("events") or []
+
+
+async def _fetch_economic_calendar_remote() -> Optional[List[dict]]:
+    """Fetch ForexFactory XML. Returns None on failure (caller backs off for 10 min)."""
     try:
         async with httpx.AsyncClient(
             timeout=15.0,
@@ -2090,15 +2118,14 @@ async def _fetch_economic_calendar() -> List[dict]:
             raw = r.content
     except Exception as e:
         logging.warning(f"ForexFactory fetch failed: {e}")
-        stale = _cache_get_stale("ff_calendar") or []
-        return stale
+        return None
 
     events: List[dict] = []
     try:
         root = ET.fromstring(raw)
     except ET.ParseError as e:
         logging.warning(f"ForexFactory XML parse failed: {e}")
-        return []
+        return None
 
     for node in root.findall("event"):
         def _t(tag):
@@ -2127,7 +2154,6 @@ async def _fetch_economic_calendar() -> List[dict]:
 
     # Sort by time (None last)
     events.sort(key=lambda e: (e["when_utc"] is None, e["when_utc"] or ""))
-    _cache_set("ff_calendar", events)
     return events
 
 async def _safe_macro() -> Optional[Dict[str, Any]]:

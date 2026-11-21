@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Target, TrendingUp, TrendingDown, Award, Loader2, BarChart3 } from "lucide-react";
+import { MODEL_META } from "@/lib/modelMeta";
 
 function fmt(n, d = 1) {
     if (n === null || n === undefined || Number.isNaN(n)) return "—";
@@ -29,16 +30,17 @@ export default function WinRateTracker({ refreshKey }) {
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
     const [err, setErr] = useState(null);
+    const [model, setModel] = useState("");
 
     useEffect(() => {
         let alive = true;
         setLoading(true);
-        api.get("/signals/stats")
+        api.get("/signals/stats", { params: model ? { model } : {} })
             .then((r) => { if (alive) setStats(r.data); })
             .catch((e) => { if (alive) setErr(e?.response?.data?.detail || e.message); })
             .finally(() => { if (alive) setLoading(false); });
         return () => { alive = false; };
-    }, [refreshKey]);
+    }, [refreshKey, model]);
 
     const overall = stats?.overall;
     const wrColor = !overall ? "#A3A3A3"
@@ -59,9 +61,22 @@ export default function WinRateTracker({ refreshKey }) {
                         Track Record · Win-Rate Tracker
                     </span>
                 </div>
-                <span className="text-[10px] font-mono text-gray-500 uppercase tracking-[0.15em]">
-                    Auto-graded from historical candles
-                </span>
+                <div className="flex items-center gap-3">
+                    <span className="hidden md:inline text-[10px] font-mono text-gray-500 uppercase tracking-[0.15em]">
+                        Auto-graded from historical candles
+                    </span>
+                    <select
+                        value={model}
+                        onChange={(e) => setModel(e.target.value)}
+                        data-testid="winrate-model-filter"
+                        className="bg-[#141414] border border-[#333] text-[10px] font-mono uppercase text-gray-300 rounded-sm px-2 py-1 focus:outline-none focus:border-[#D4AF37]"
+                    >
+                        <option value="">All models</option>
+                        {Object.entries(MODEL_META).map(([id, m]) => (
+                            <option key={id} value={id}>{m.label}</option>
+                        ))}
+                    </select>
+                </div>
             </div>
 
             {loading && (

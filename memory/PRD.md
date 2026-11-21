@@ -116,3 +116,24 @@
 - Backend: ✅ Running, lint clean
 - Frontend: ✅ Running, lint clean
 - All endpoints tested end-to-end via testing agent (iteration_2.json: 100% pass rate on targeted features)
+
+
+## Multi-Model AI Upgrade (Nov 2026)
+User ask: "check this project all model of AI all" + "like CPI or anything make super stronger" (TwelveData key added).
+- 5-model roster (Claude Opus 5.5 main, Sonnet 5.5, Haiku 5.5, GPT 5.5, GPT 6 Luna) replaces Claude 4.5 + Gemini — `backend/ai_models.py`
+- Majority voting: UNANIMOUS / MAJORITY / CONFLICTED (tie→HOLD) / SINGLE_SOURCE; failed/timed-out (45s) models not counted
+- Council roles each pick a model (bull, bear, trader, aggressive, neutral, conservative, manager); risk team now separate calls
+- Presets Max quality / Balanced / Budget; settings saved in Mongo `ai_settings`, used by Deep AI, Council, auto-upgrade, EA
+- Endpoints: GET /api/ai/models, GET/PUT /api/ai/settings, GET /api/ai/progress/{run_id}, GET /api/calendar/macro, /api/signals/stats?model=
+- Live per-model progress in signal card; model tags in history; win-rate filter by model
+- Macro calendar (CPI/NFP/FOMC/PCE… forecast vs previous → gold bias + event risk) feeds AI prompt + rule engine — `backend/macro_events.py`
+- ForexFactory feed: 10-min backoff on failure + Mongo `calendar_cache` fallback
+
+## Known issues
+- Emergent LLM key returns "API key is inactive" → all AI calls fail (Rule Engine works). User needs to top up/activate Universal Key.
+- ForexFactory currently rate-limits (429) → macro panel empty until feed recovers.
+
+## Backlog
+- P1: engine falls back to Rule on timeframe change / cancel stale requests; safe int parsing for LLM confidence; dedupe identical rule signals in history
+- P2: per-model leaderboard, confidence-weighted voting, cost tracking per signal
+- P3: auto-pick best model per timeframe, Telegram vote breakdown, multi-asset

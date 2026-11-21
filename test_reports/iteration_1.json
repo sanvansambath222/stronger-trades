@@ -1,0 +1,48 @@
+{
+  "summary": "Tested the 5-model AI upgrade on the backend (12/12 pytest pass) and frontend (Playwright). Everything requested works: catalog, settings validation and saving, rule signal with models_used/macro_context, stats with model filter, progress endpoint, the engine=ai graceful failure (about 1.6s, 3 votes recorded as available:false), the drawer (toggles, last-model guard, presets, roles, cost hints, save, reload), run-cost-hint, macro-panel, the Deep AI progress-then-error flow, the Models column and the existing modals. Problems found: (1) every Deep AI or Council click sends 2 backend runs, which doubles LLM cost; (2) the ForexFactory calendar returns 429 and failed fetches are never cached, so macro data is always empty and the feed gets hit again on every request (51 x 429 in the log); (3) the win-rate tracker has no model filter in the UI.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "_fetch_economic_calendar (used by /api/calendar/macro, /api/analysis/ai macro_context, blackout)", "issue": "ForexFactory returns 429 Too Many Requests (51 in backend.err.log). Failed fetches are not cached and there is no backoff or lock. Each signal request calls it 2+ times (_safe_macro plus _get_blackout_status) and concurrent requests all fetch. After a hot reload the in-memory cache is empty, so macro_context.events stays [] and the CPI/NFP/FOMC feature never shows data. The news blackout also silently stops working.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "/api/analysis/ai engine=ai", "issue": "int(parsed.get('confidence')) at line ~1561 and int(bull.get('confidence_in_buy')) in council will raise a 500 if an LLM returns a non-numeric confidence (e.g. '75%'). Wrap in a safe parse."},
+      {"endpoint": "/api/analysis/ai", "issue": "A new rule signal is saved to ai_signals on every page load when the cache is missed. History shows many identical HOLD rows (same entry/SL/TP, seconds apart)."},
+      {"endpoint": "/api/calendar/macro", "issue": "Can't verify the gold_bias/event_risk scoring with real events right now because the source returns 429. Only the empty-state structure was verified."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Dashboard.loadAI", "issue": "Deep AI/Council clicks send TWO /api/analysis/ai requests (confirmed in network: run_ids ...89184 and ...89198, 14ms apart). Cause: loadAI('ai') calls setEngine('ai'), which recreates the loadAI callback (engine is a dependency), and then useEffect([loadAI, refreshKey]) runs loadAI() a second time. This doubles LLM cost. Live progress polls the first runId while the result comes from whichever run finishes last.", "selector": "[data-testid='deep-ai-btn'], council button", "priority": "HIGH"},
+      {"component": "Dashboard engine stickiness", "issue": "After one Deep AI click, every timeframe change or toggle (auto-upgrade, blackout) re-runs the full paid multi-model engine automatically. If it fails, the rule signal and macro-panel disappear and only the ai-error shows. Consider falling back to the rule signal or going back to engine=rule on a timeframe change. Older requests are also not cancelled, so a stale response can overwrite a newer one.", "selector": "[data-testid^='timeframe-']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [
+      {"flow": "Stats filter by model", "issue": "The backend supports /api/signals/stats?model= and returns by_model, but WinRateTracker.jsx only calls /signals/stats with no filter and never shows by_model. The approved 'stats filter by model' feature is missing from the UI.", "affected_selectors": ["WinRateTracker"]}
+    ],
+    "design_issues": [
+      {"screen": "Signal card macro-panel header", "issues": ["The title 'MACRO CALENDAR · CPI / NFP / FED' runs into 'GOLD NEUTRAL · RISK LOW' with no gap in the narrow sidebar ('FEDGOLD NEUTRAL'). It needs wrapping or a gap."]},
+      {"screen": "AI Models drawer", "issues": ["The 'Keep at least one model switched on' toast covers the Cancel/Save footer buttons at the bottom-right."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_ai_models_macro.py", "/app/test_reports/pytest/pytest_ai_models.xml"],
+  "action_items": [
+    "Fix the duplicate AI run in Dashboard.jsx: don't let setEngine retrigger the effect. For example, use a ref for engine, drop engine from the loadAI deps for forced runs, or guard with an in-flight ref or AbortController.",
+    "Add a negative cache or backoff to _fetch_economic_calendar: on failure, cache the stale or empty result for about 10 minutes, add an asyncio.Lock to stop concurrent fetches, and save the last good calendar to Mongo so it survives reloads.",
+    "Add a model filter (by_model) to WinRateTracker using /api/signals/stats?model=<id>.",
+    "Parse LLM confidence values safely (strip '%' and use try/except) to avoid 500s.",
+    "Fix spacing in the macro-panel header. Optionally fall back to the rule signal when Deep AI fails."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 2638 lines. Split it into routers (ai, calendar, signals, ea, telegram).",
+    "The three risk-role AIVote blocks (aggressive/neutral/conservative) are near-identical, about 30 lines. Extract a helper.",
+    "_PROGRESS is in-memory per process. It is fine for a single worker but breaks with multiple uvicorn workers.",
+    "When the result comes from cache (180s), the progress endpoint returns no items for the new run_id. That is acceptable, but the UI shows no votes.",
+    "AISettings.preset is not validated against PRESETS keys (any string is accepted)."
+  ],
+  "updated_files": ["/app/backend/tests/test_ai_models_macro.py"],
+  "success_rate": {"backend": "100% (12/12 pytest); macro data unverifiable because ForexFactory returns 429", "frontend": "~85% (all requested testids work; duplicate-run bug and missing stats model filter)"},
+  "seed_data_creation": "No seed data. Test runs added rule/AI signal rows to ai_signals through normal API use. ai_settings were reset to the balanced preset at the end.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run with: pytest tests/test_ai_models_macro.py -n 0 (the tests change shared ai_settings and must run sequentially). The LLM key is inactive, so engine=ai/council fail fast with 'All selected AI models failed to respond' / 'Council debate failed'. ForexFactory was rate-limiting (429). The ai_settings document once changed between my runs to a budget-roles/3-model mix, probably from another concurrent actor; it is now reset to balanced. Writing files under /app/backend/tests triggers a backend hot reload, which wipes the in-memory caches.",
+  "rca of the issue": "Duplicate Deep AI request: Dashboard.jsx line 57 setEngine(forceEngine) inside loadAI, together with useCallback deps [.., engine, ..] and useEffect(() => loadAI(), [loadAI, refreshKey]) at line 79, runs a second fetch with engine='ai'. Macro empty: the ForexFactory 429 path returns the stale cache or [] and never sets the cache, so the next call fetches again right away, which keeps the rate limit going."
+}
