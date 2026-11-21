@@ -137,3 +137,10 @@ User ask: "check this project all model of AI all" + "like CPI or anything make 
 - P1: engine falls back to Rule on timeframe change / cancel stale requests; safe int parsing for LLM confidence; dedupe identical rule signals in history
 - P2: per-model leaderboard, confidence-weighted voting, cost tracking per signal
 - P3: auto-pick best model per timeframe, Telegram vote breakdown, multi-asset
+
+## Trader Top-3 Upgrade (Nov 2026)
+- Official US actuals via FRED (CPI m/m & y/y, core CPI, NFP, unemployment, core PCE) → surprise vs forecast scored 2x — `backend/fred_data.py`, `macro_events.py`. FRED key SKIPPED by user → actuals off until FRED_API_KEY added.
+- US yields: nominal 10Y (Yahoo ^TNX) always; real 10Y + breakeven via FRED. Fed into AI prompt + rule engine (±1 factor).
+- Risk Guard (`backend/risk.py`): position size (floored to 0.01 lot), daily loss limit default 1 loss or −2% → locks dashboard + /api/ea/signal returns locked; EA logs and skips. Endpoints /api/risk/settings|status|position-size.
+- ForexFactory now uses JSON feed (XML fallback).
+- Backlog: header 24h change on non-15m timeframes looks off (likely pre-existing); trailing stop; session filter; key levels.

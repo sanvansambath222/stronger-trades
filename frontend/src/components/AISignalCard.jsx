@@ -214,12 +214,12 @@ function PositionSize({ signal, risk }) {
     const dist = Math.abs(signal.entry - signal.stop_loss);
     if (!dist) return null;
     const riskUsd = (s.account_balance * s.risk_pct) / 100;
-    const lot = riskUsd / (dist * 100);
+    const lot = Math.floor((riskUsd / (dist * 100)) * 100 + 1e-9) / 100;
     return (
         <div className="flex items-center justify-between px-3 py-2 border border-[#D4AF37]/30 bg-[#D4AF37]/5 rounded-sm" data-testid="position-size">
             <div className="text-[10px] font-mono text-[#D4AF37] uppercase tracking-[0.15em]">Position size</div>
             <div className="font-mono text-xs text-white">
-                <span className="font-bold text-sm" data-testid="position-size-lot">{lot.toFixed(2)} lot</span>
+                <span className="font-bold text-sm" data-testid="position-size-lot">{lot > 0 ? `${lot.toFixed(2)} lot` : "below 0.01 lot — skip"}</span>
                 <span className="text-gray-500"> · risk ${riskUsd.toFixed(0)} ({s.risk_pct}%) · SL {dist.toFixed(2)}</span>
             </div>
         </div>

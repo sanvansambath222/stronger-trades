@@ -1,3 +1,4 @@
+import math
 from datetime import datetime, timezone
 from typing import Dict, List
 from pydantic import BaseModel, Field
@@ -21,7 +22,7 @@ def today_start_utc() -> datetime:
 def position_size(settings: RiskSettings, entry: float, stop_loss: float) -> Dict:
     risk_usd = settings.account_balance * settings.risk_pct / 100
     dist = abs(entry - stop_loss)
-    lot = round(risk_usd / (dist * XAU_CONTRACT_OZ), 2) if dist > 0 else 0.0
+    lot = math.floor(risk_usd / (dist * XAU_CONTRACT_OZ) * 100 + 1e-9) / 100 if dist > 0 else 0.0
     return {"risk_usd": round(risk_usd, 2), "sl_distance": round(dist, 2), "lot": lot, "risk_pct": settings.risk_pct}
 
 

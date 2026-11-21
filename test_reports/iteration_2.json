@@ -1,0 +1,32 @@
+{
+  "summary": "Tested the 3 trader upgrades end-to-end. Backend: 16/16 pytest pass (macro shape with yields + fred_enabled=false + actuals {}, rule engine macro_context with yields, risk settings defaults/PUT/persist/422 validation, position-size math 3530/3520 -> 0.1 lot $100, EA CLOSED -150 -> locked (count, source ea), /api/ea/signal returns {has_signal:false, locked:true, reason}, enabled=false unlocks, pct lock -250 -> -2.50% locked). Frontend: risk-guard-card at top of sidebar with all fields, settings dialog prefilled, save refreshes card (1% -> 2% · $200), invalid risk_pct 20 shows toast 'Input should be less than or equal to 10'; locked state shows 'Trading locked today' + risk-lock-reason; 1H SELL signal shows risk-locked-banner and position-size 0.02 lot (100/(41.09*100)=0.024 correct); macro-yields line + 'Official actuals off · add FRED key' visible. Regression: Deep AI click fires exactly 1 /api/analysis/ai request, timeframe click fires 1 request, winrate-model-filter present with 7 options, AI Models drawer opens. Cleanup done: qa- ea_events deleted, risk_settings doc removed (it did not exist before = defaults).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Header price strip", "issue": "After switching to 1H timeframe header changed from 3,532.88 +12.31 (+0.35%) to 3,539.00 -314.00 (-8.15%), prev close 3,853 — quote/24h change appears derived from the selected-interval candles rather than a real daily quote. Possibly pre-existing; verify.", "selector": "header price/24h change", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Macro panel", "issues": ["'Official actuals off · add FRED key' is 9px text-gray-600 on near-black — low contrast"]},
+      {"screen": "AI Models drawer", "issues": ["Emergent badge overlaps the drawer Save button area at bottom-right (platform badge, cosmetic)"]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_risk_guard_macro.py", "/app/test_reports/pytest/pytest_iter2.xml"],
+  "action_items": [
+    "Optional: PositionSize uses toFixed(2) (rounds up, can exceed risk; shows 0.00 lot for tiny accounts/wide SL). Consider floor to 0.01 step and min-lot warning — same in backend risk.position_size (round).",
+    "Optional: raise contrast of FRED note text",
+    "Optional: verify header 24h change on non-15m timeframes"
+  ],
+  "critical_code_review_comments": [
+    "_risk_status() is called on every /api/ea/signal poll and grades up to 300 signals (candle fetches in _grade_signal) — may be slow/rate-limit heavy for frequent EA polling; consider caching status for ~30-60s.",
+    "ea_events received_at compared as ISO strings against today_start isoformat — works because both are UTC isoformat with +00:00; keep format consistent.",
+    "/api/ea/event is unauthenticated: anyone can post a fake CLOSED loss and lock trading for the day (or spam Telegram). Consider an EA shared secret.",
+    "server.py is 2756 lines — should be split into routers."
+  ],
+  "updated_files": ["/app/backend/tests/test_risk_guard_macro.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Temporary ea_events qa-lock/qa-pct and risk_settings doc — all deleted afterwards.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Telegram is not configured (db.settings has no telegram doc) so EA events don't send messages. Run tests with -n 0 (risk tests share state). Rule engine: 15m HOLD, 1h/4h/1d SELL at time of testing; yields gold_bias NEUTRAL so no yields factor in reasoning (code path reviewed, correct). Container clock is Nov 2026."
+}
