@@ -41,6 +41,7 @@ export default function Dashboard() {
     const [modelsOpen, setModelsOpen] = useState(false);
     const [liveProgress, setLiveProgress] = useState([]);
     const [riskStatus, setRiskStatus] = useState(null);
+    const [historyKey, setHistoryKey] = useState(0);
     const loadRisk = useCallback(() => { fetchRiskStatus().then(setRiskStatus).catch(() => {}); }, []);
     useEffect(() => {
         loadRisk();
@@ -79,6 +80,7 @@ export default function Dashboard() {
         } finally {
             if (poll) window.clearInterval(poll);
             setAiLoading(false);
+            setHistoryKey((k) => k + 1);
         }
     }, [interval, autoUpgrade, newsBlackout, blackoutWindow, withRiskTeam]);
 
@@ -253,7 +255,7 @@ export default function Dashboard() {
                             <IndicatorsPanel interval={interval} refreshKey={refreshKey} />
                         </div>
                         <div className="col-span-12 lg:col-span-5">
-                            <SignalHistory refreshKey={refreshKey} />
+                            <SignalHistory refreshKey={`${refreshKey}-${historyKey}`} />
                         </div>
                     </div>
                 </section>

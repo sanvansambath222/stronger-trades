@@ -1228,6 +1228,12 @@ async def get_ai_signal(
 
     cache_key = f"ai:{engine}:au{int(auto_upgrade)}:nb{int(news_blackout)}:bw{blackout_window}:rt{int(with_risk_team)}:{interval}:{settings.cache_tag()}"
     cached = _cache_get(cache_key, ttl_seconds=180 if engine in ("ai", "council") else 60)
+    if not cached and engine == "ai":
+        # Reuse a fresh auto-upgraded multi-model vote instead of paying for a second identical run
+        au_key = f"ai:rule:au1:nb{int(news_blackout)}:bw{blackout_window}:rt{int(with_risk_team)}:{interval}:{settings.cache_tag()}"
+        au_cached = _cache_get(au_key, ttl_seconds=180)
+        if au_cached and au_cached.get("auto_upgraded"):
+            cached = au_cached
     if cached:
         if needs_streaming:
             return StreamingResponse(

@@ -1,0 +1,40 @@
+{
+  "summary": "Checked the fix for the reported bug: Deep AI showed 'All selected AI models failed to respond'. The fix is confirmed. Backend logs from 03:01 UTC, before the restart, show 'API key is inactive' from every model. Since the 03:03 restart, the backend process loads USER_EMERGENT_LLM_KEY (checked by name and length only; the value was not printed) and no model calls have failed. Backend: a pytest run of GET /api/analysis/ai?engine=ai&interval=15min&run_id streamed JSON with whitespace heartbeats, returned votes with available:true, a consensus value and models_used, in about 23s. /api/ai/progress/{run_id} listed one vote item per model. UI: Deep AI on 4H with the default 3 models showed votes appearing in ai-live-progress, then a UNANIMOUS SELL with vote-opus, vote-sonnet and vote-gpt55 chips and reasons, and no ai-error. In the AI Models drawer I enabled haiku and gpt6luna and saved (count went to 5). Deep AI on 1D then returned MAJORITY HOLD (3 of 5) with 5 vote chips. I reset to the Balanced preset and saved; the API confirms ensemble opus,sonnet,gpt55 with balanced roles. Council on 1H without the risk team showed the debate panel with bull (Sonnet) and bear (GPT 5.5) cards, model tags and the 'Bear wins' badge. Turning on the risk team re-ran the council and showed Aggressive (GPT 6 Luna), Neutral (Sonnet) and Conservative (Haiku) cards plus the Portfolio Manager (Opus), decision REJECTED, in about 33s. The signal history API stores the new AI signals with the correct models_used. About 7 real AI runs were made, more than the ~5 budget, because 2 auto-upgrade runs fired on their own (see issues).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/analysis/ai", "issue": "Auto-upgrade runs and manual Deep AI runs use different cache keys (au1 vs au0), so they never share a cached result. Selecting 4H or 1D triggered a rule run that auto-upgraded to the full Deep AI vote (4h at 03:07:26, 1day at 03:08:38). Clicking Deep AI right after paid for a second full run on the same timeframe (03:07:48, 03:08:58). Credits are spent twice."},
+      {"endpoint": "/api/analysis/ai (engine=rule)", "issue": "Rule-engine signals are saved twice with the same timestamp to the millisecond (e.g. two 15min HOLD rows at 03:08:11.7329 and 03:08:11.7335). Likely cause: React.StrictMode in index.js runs the loadAI effect twice in dev, and there is no in-flight request de-duplication. This adds noise to the signal history and win-rate stats."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SignalHistory", "issue": "The history table only reloads when refreshKey changes, not after a Deep AI or Council run finishes. Right after the 5-model run, signal-models-0 still showed the older 3-model row until a manual refresh.", "selector": "[data-testid=signal-models-0]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "AI Models drawer", "issues": ["The 'Made with Emergent' badge partly covers the Save button in the bottom-right corner at 1920x1080. The button can still be clicked."]},
+      {"screen": "Risk team manager card", "issues": ["Final action HOLD is shown in red (the SELL colour); a neutral or gold colour would be clearer."]},
+      {"screen": "Dashboard layout", "issues": ["When the right AI column is long (council plus risk team), the left column leaves a large empty dark area below the indicators."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_deep_ai_key_fix.py", "/app/test_reports/pytest/deep_ai_key_fix.xml"],
+  "action_items": [
+    "Optional: when auto-upgrade has already produced a Deep AI result for the same interval and settings, reuse that cache entry for an engine=ai request (or skip auto-upgrade when the user is about to click Deep AI), to avoid paying for two runs.",
+    "Optional: refresh SignalHistory after loadAI finishes (for example bump a history key in the finally block of loadAI).",
+    "Optional: de-duplicate rule-signal saves, or guard loadAI against StrictMode double-invoke or concurrent runs."
+  ],
+  "critical_code_review_comments": [
+    "server.py has about 2756 lines and should be split into routers or modules (ai_engine, council, risk, calendar, telegram, ea).",
+    "EMERGENT_LLM_KEY is read once at import time. Rotating USER_EMERGENT_LLM_KEY needs a backend restart.",
+    "The heartbeat stream returns HTTP 200 with a {detail} body when it fails. The frontend must treat detail-only payloads as errors. It does today (that is how the original error was shown), but monitoring will never see the 502 status.",
+    "_PROGRESS is an in-memory dict, so live progress only works with a single uvicorn worker."
+  ],
+  "updated_files": ["/app/backend/tests/test_deep_ai_key_fix.py"],
+  "success_rate": {"backend": "100% (4/4)", "frontend": "100% of requested flows (Deep AI 3-model, 5-model, preset reset, Council, Council + risk team)"},
+  "seed_data_creation": "No seed data. Using the app as a real user would created ai_signals history entries (Deep AI 15min/4h/1day, Council 1h, Council + risk 1h, plus rule and auto-upgrade rows). The app has no delete endpoint for these, so they were left in place. AI settings were restored to the Balanced preset (opus,sonnet,gpt55) and verified via GET /api/ai/settings.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Fresh AI runs were done on 15min (pytest), 4h, 1day (5 models) and 1h (council, council + risk) around 03:06-03:11 UTC. Results are cached for 180s per engine, timeframe and settings. pytest.ini forces xdist (-n), so do not pass -p no:xdist. Opening a timeframe with auto-upgrade on can start a Deep AI run by itself; turn off auto-upgrade-toggle first to save credits. Turning on risk-team-toggle while engine=council re-runs Council automatically.",
+  "rca of the issue": "Reproduced from logs: at 03:01:29 every ensemble model (opus, sonnet, gpt55) raised 'litellm.AuthenticationError ... API key is inactive', so _compute_consensus returned FAILED and the endpoint raised 502 'All selected AI models failed to respond'. Fix: server.py line 35 now prefers USER_EMERGENT_LLM_KEY, which is present in the backend process environment. After the restart, every model in every run answered and no call failed."
+}
