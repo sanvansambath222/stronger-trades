@@ -129,6 +129,17 @@ void PollAndTrade()
 
    string json = CharArrayToString(result, 0, -1, CP_UTF8);
 
+   if(StringFind(json, "\"locked\":true") >= 0)
+   {
+      static datetime last_lock_log = 0;
+      if(TimeCurrent() - last_lock_log > 900)
+      {
+         Print("AURUM daily loss limit hit — no new trades today: ", JsonStr(json, "reason"));
+         last_lock_log = TimeCurrent();
+      }
+      return;
+   }
+
    if(StringFind(json, "\"has_signal\":true") < 0)
       return; // no new signal
 

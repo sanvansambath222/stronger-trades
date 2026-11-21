@@ -9,6 +9,8 @@ import WinRateTracker from "@/components/WinRateTracker";
 import { Activity, Cpu } from "lucide-react";
 import { fetchAISignal, fetchAISettings, fetchAIModels, fetchAIProgress } from "@/lib/api";
 import AIModelsDrawer from "@/components/AIModelsDrawer";
+import RiskGuard from "@/components/RiskGuard";
+import { fetchRiskStatus } from "@/lib/api";
 import TelegramSettings from "@/components/TelegramSettings";
 import EASettings from "@/components/EASettings";
 
@@ -38,6 +40,13 @@ export default function Dashboard() {
     const [presets, setPresets] = useState(null);
     const [modelsOpen, setModelsOpen] = useState(false);
     const [liveProgress, setLiveProgress] = useState([]);
+    const [riskStatus, setRiskStatus] = useState(null);
+    const loadRisk = useCallback(() => { fetchRiskStatus().then(setRiskStatus).catch(() => {}); }, []);
+    useEffect(() => {
+        loadRisk();
+        const id = window.setInterval(loadRisk, 60000);
+        return () => window.clearInterval(id);
+    }, [loadRisk, refreshKey]);
 
     useEffect(() => {
         fetchAISettings().then(setAiSettings).catch(() => {});
@@ -249,6 +258,7 @@ export default function Dashboard() {
                     </div>
                 </section>
                 <aside className="col-span-12 xl:col-span-3 space-y-2">
+                    <RiskGuard status={riskStatus} onChanged={loadRisk} />
                     <AISignalCard
                         signal={aiSignal}
                         loading={aiLoading}
@@ -260,6 +270,7 @@ export default function Dashboard() {
                         aiSettings={aiSettings}
                         withRiskTeam={withRiskTeam}
                         liveProgress={liveProgress}
+                        riskStatus={riskStatus}
                         confidenceThreshold={confidenceThreshold}
                         strongOnly={strongOnly}
                     />

@@ -18,6 +18,8 @@ import feedparser
 import xml.etree.ElementTree as ET
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 from macro_events import analyze_macro, macro_prompt_block
+from risk import RiskSettings, compute_status, position_size, today_start_utc
+from fred_data import get_us_actuals, get_yields, yields_prompt_block, fred_enabled
 from ai_models import (
     MODEL_ROSTER, ROLES, PRESETS, MODEL_TIMEOUT_SECONDS, AISettings,
     default_settings, model_label, progress_push, progress_get,
@@ -587,6 +589,9 @@ upper {f(snapshot.bb_upper)} | mid {f(snapshot.bb_mid)} | lower {f(snapshot.bb_l
 ═══ ECONOMIC CALENDAR · HIGH-IMPACT USD RELEASES (CPI, NFP, FOMC, PCE…) ═══
 {macro_prompt_block(macro)}
 
+═══ US TREASURY YIELDS (nominal + REAL) ═══
+{yields_prompt_block((macro or {}).get("yields"))}
+
 ═══ RECENT GOLD MARKET NEWS HEADLINES ═══
 {news_section}
 
@@ -624,7 +629,7 @@ Return STRICT JSON only (no markdown fences) with these exact keys:
     "trend": "Multi-timeframe trend read (mention HIGHER + PRIMARY + LOWER)",
     "momentum": "Indicator-based momentum analysis (RSI, MACD, EMAs vs price)",
     "news": "Impact assessment of the news headlines on gold direction",
-    "macro": "DXY / USD strength plus CPI/NFP/FOMC calendar expectations and their implication for gold",
+    "macro": "DXY, real/nominal yields and CPI/NFP/FOMC actuals vs forecast — implication for gold",
     "verdict": "Final decision rationale tying it all together"
   }}
 }}
@@ -758,6 +763,14 @@ def _rule_engine_analyze(
         m_score = max(-1.5, min(1.5, macro["bias_score"] * 0.5))
         score += m_score
         factors.append(f"Macro calendar bias {macro['gold_bias']} ({m_score:+.1f}) from {len(macro.get('events') or [])} USD releases")
+
+    # US yields — real yields are gold's opportunity cost
+    yl = (macro or {}).get("yields") or {}
+    if yl.get("gold_bias") in ("BULLISH", "BEARISH"):
+        y_move = yl.get("real_10y_5d_change_bp", yl.get("nominal_10y_5d_change_bp"))
+        y_name = "Real" if "real_10y_5d_change_bp" in yl else "Nominal"
+        score += 1 if yl["gold_bias"] == "BULLISH" else -1
+        factors.append(f"{y_name} 10Y yield {y_move:+.1f}bp over ~1w — {yl['gold_bias'].lower()} gold")
 
     # Decide action
     if score >= 3:
@@ -1661,6 +1674,54 @@ async def _compute_ai_signal(
     asyncio.create_task(_maybe_send_signal_alert(signal))
     return payload
 
+# ------------------- Risk: position sizing + daily loss limit -------------------
+async def _load_risk_settings() -> RiskSettings:
+    doc = await db.risk_settings.find_one({"_id": "default"}, {"_id": 0})
+    return RiskSettings(**doc) if doc else RiskSettings()
+
+
+async def _risk_status() -> dict:
+    cfg = await _load_risk_settings()
+    start = today_start_utc()
+    ea_closed = await db.ea_events.find(
+        {"event": "CLOSED", "received_at": {"$gte": start.isoformat()}}, {"_id": 0}
+    ).to_list(500)
+    recent = await db.ai_signals.find(
+        {"action": {"$ne": "HOLD"}, "created_at": {"$gte": (start - timedelta(days=2)).isoformat()}}, {"_id": 0}
+    ).to_list(300)
+    for sdoc in recent:
+        if not sdoc.get("outcome"):
+            updates = await _grade_signal(sdoc)
+            if updates:
+                await db.ai_signals.update_one({"id": sdoc["id"]}, {"$set": updates})
+                sdoc.update(updates)
+    start_ts = int(start.timestamp())
+    graded_today = [x for x in recent if x.get("outcome") in ("TP1", "TP2", "TP3", "SL", "EXPIRED")
+                    and (x.get("exit_time") or 0) >= start_ts]
+    return compute_status(cfg, ea_closed, graded_today)
+
+
+@api_router.get("/risk/settings", response_model=RiskSettings)
+async def get_risk_settings():
+    return await _load_risk_settings()
+
+
+@api_router.put("/risk/settings", response_model=RiskSettings)
+async def update_risk_settings(payload: RiskSettings):
+    await db.risk_settings.update_one({"_id": "default"}, {"$set": payload.model_dump()}, upsert=True)
+    return payload
+
+
+@api_router.get("/risk/status")
+async def risk_status():
+    return await _risk_status()
+
+
+@api_router.get("/risk/position-size")
+async def risk_position_size(entry: float = Query(..., gt=0), stop_loss: float = Query(..., gt=0)):
+    return position_size(await _load_risk_settings(), entry, stop_loss)
+
+
 # ------------------- AI model settings -------------------
 async def _load_ai_settings() -> AISettings:
     doc = await db.ai_settings.find_one({"_id": "default"}, {"_id": 0})
@@ -1819,6 +1880,9 @@ async def ea_latest_signal(
 ):
     """Latest fresh (non-expired, non-HOLD) signal for MT5 EA polling.
     Returns has_signal=false if no new signal since last_id."""
+    risk = await _risk_status()
+    if risk["locked"]:
+        return {"has_signal": False, "locked": True, "reason": risk["reason"]}
     query: Dict[str, Any] = {"action": {"$ne": "HOLD"}}
     if interval:
         query["timeframe"] = interval
@@ -1839,6 +1903,7 @@ async def ea_latest_signal(
     tp1 = signal.get("tp1") or signal.get("take_profit")
     return {
         "has_signal": True,
+        "risk_pct": risk["settings"]["risk_pct"],
         "id": signal["id"],
         "action": signal["action"],
         "symbol": "XAUUSD",
@@ -2050,6 +2115,7 @@ async def get_news(limit: int = Query(12, le=30)):
 # ------------------- Economic Calendar / News Blackout -------------------
 # ForexFactory weekly XML mirror — free, no auth. Times are Eastern Time (ET).
 FF_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
+FF_CALENDAR_JSON_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 ET_TZ = ZoneInfo("America/New_York")
 
 # Pairs that move XAU/USD most aggressively
@@ -2107,7 +2173,29 @@ async def _ff_fallback() -> List[dict]:
 
 
 async def _fetch_economic_calendar_remote() -> Optional[List[dict]]:
-    """Fetch ForexFactory XML. Returns None on failure (caller backs off for 10 min)."""
+    """Fetch ForexFactory calendar (JSON feed, XML fallback). Returns None on failure (caller backs off for 10 min)."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0, headers={"User-Agent": "Mozilla/5.0 (compatible; AurumTerminal/1.0)"}) as http:
+            r = await http.get(FF_CALENDAR_JSON_URL)
+            r.raise_for_status()
+            items = r.json()
+        events = []
+        for it in items:
+            try:
+                when = datetime.fromisoformat(it["date"]).astimezone(timezone.utc)
+            except (KeyError, ValueError, TypeError):
+                when = None
+            events.append({
+                "title": it.get("title", ""), "country": (it.get("country") or "").upper(),
+                "impact": it.get("impact") or "Low", "forecast": it.get("forecast") or "",
+                "previous": it.get("previous") or "", "url": "",
+                "time_et": "", "date_et": it.get("date", ""),
+                "when_utc": when.isoformat() if when else None, "scheduled": when is not None,
+            })
+        events.sort(key=lambda e: (e["when_utc"] is None, e["when_utc"] or ""))
+        return events
+    except Exception as e:
+        logging.warning(f"ForexFactory JSON fetch failed, trying XML: {e}")
     try:
         async with httpx.AsyncClient(
             timeout=15.0,
@@ -2158,8 +2246,11 @@ async def _fetch_economic_calendar_remote() -> Optional[List[dict]]:
 
 async def _safe_macro() -> Optional[Dict[str, Any]]:
     try:
-        events = await _fetch_economic_calendar()
-        return analyze_macro(events, datetime.now(timezone.utc), _is_gold_sensitive)
+        events, actuals, yields = await asyncio.gather(_fetch_economic_calendar(), get_us_actuals(), get_yields())
+        macro = analyze_macro(events, datetime.now(timezone.utc), _is_gold_sensitive, actuals)
+        macro["yields"] = yields
+        macro["fred_enabled"] = fred_enabled()
+        return macro
     except Exception as e:
         logging.warning(f"Macro calendar analysis failed: {e}")
         return None

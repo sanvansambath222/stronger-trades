@@ -2,6 +2,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
+from fred_data import actual_for_title
+
 # Releases where a HIGHER print is USD-bullish (gold-bearish)
 USD_UP_KEYWORDS = [
     "cpi", "ppi", "pce", "inflation", "non-farm", "nonfarm", "payroll", "average hourly earnings",
@@ -31,8 +33,10 @@ def _polarity(title: str) -> int:
     return 0
 
 
-def analyze_macro(events: List[dict], now: datetime, is_sensitive) -> Dict:
-    """Score gold-sensitive USD releases (CPI, NFP, FOMC…) in the -24h..+48h window by forecast vs previous."""
+def analyze_macro(events: List[dict], now: datetime, is_sensitive, actuals: Optional[Dict] = None) -> Dict:
+    """Score gold-sensitive USD releases (CPI, NFP, FOMC…) in the -24h..+48h window.
+    Released events with an official FRED actual are scored on the SURPRISE (actual vs forecast, 2x weight);
+    otherwise on the expectation (forecast vs previous)."""
     window = []
     for e in events:
         if not e.get("scheduled") or not is_sensitive(e):
@@ -48,16 +52,24 @@ def analyze_macro(events: List[dict], now: datetime, is_sensitive) -> Dict:
         weight = 1.0 if e.get("impact") == "High" else 0.5
         gold_bias = "NEUTRAL"
         score = 0.0
-        if pol and fc is not None and pv is not None and fc != pv:
-            usd_dir = (1 if fc > pv else -1) * pol
-            score = -usd_dir * weight
-            gold_bias = "BULLISH" if score > 0 else "BEARISH"
         mins = round((when - now).total_seconds() / 60.0, 1)
+        act = actual_for_title(e.get("title", ""), actuals) if mins < 0 else None
+        surprise = None
+        if act is not None and fc is not None:
+            fc_cmp = fc / 1000 if act.get("unit") == "K" and abs(fc) >= 1000 else fc
+            surprise = round(act["value"] - fc_cmp, 2)
+            if pol and surprise != 0:
+                score = -(1 if surprise > 0 else -1) * pol * weight * 2
+        elif pol and fc is not None and pv is not None and fc != pv:
+            score = -(1 if fc > pv else -1) * pol * weight
+        if score:
+            gold_bias = "BULLISH" if score > 0 else "BEARISH"
         window.append({
             "title": e.get("title"), "impact": e.get("impact"), "country": e.get("country"),
             "forecast": e.get("forecast") or "", "previous": e.get("previous") or "",
             "when_utc": e["when_utc"], "minutes_until": mins, "released": mins < 0,
             "gold_bias": gold_bias, "score": score,
+            "actual": (f"{act['value']}{act['unit']}" if act else ""), "surprise": surprise,
         })
     window.sort(key=lambda x: x["when_utc"])
 
@@ -66,7 +78,10 @@ def analyze_macro(events: List[dict], now: datetime, is_sensitive) -> Dict:
     nearest = upcoming[0]["minutes_until"] if upcoming else None
     event_risk = "HIGH" if nearest is not None and nearest <= 240 else "ELEVATED" if nearest is not None and nearest <= 1440 else "LOW"
     bias = "BULLISH" if total >= 0.75 else "BEARISH" if total <= -0.75 else "NEUTRAL"
+    surprises = [x for x in window if x["surprise"] is not None and x["score"]]
     return {
+        "surprises": surprises,
+        "actuals": actuals or {},
         "events": window[:10],
         "bias_score": round(total, 2),
         "gold_bias": bias,
@@ -75,20 +90,37 @@ def analyze_macro(events: List[dict], now: datetime, is_sensitive) -> Dict:
     }
 
 
+def _actuals_line(macro: Optional[Dict]) -> str:
+    a = (macro or {}).get("actuals") or {}
+    if not a:
+        return ""
+    names = {"cpi_yy": "CPI y/y", "core_cpi_yy": "Core CPI y/y", "core_pce_yy": "Core PCE y/y", "nfp": "NFP", "unemployment": "Unemployment"}
+    parts = [f"{n} {a[k]['value']}{a[k]['unit']} ({a[k]['period'][:7]})" for k, n in names.items() if k in a]
+    return "\nLatest official US prints (FRED): " + " | ".join(parts)
+
+
 def macro_prompt_block(macro: Optional[Dict]) -> str:
     if not macro or not macro.get("events"):
-        return "No high-impact USD releases (CPI, NFP, FOMC, PCE…) in the last 24h / next 48h."
+        return "No high-impact USD releases (CPI, NFP, FOMC, PCE…) in the last 24h / next 48h." + _actuals_line(macro)
     lines = []
     for x in macro["events"]:
         when = f"released {abs(x['minutes_until']) / 60:.1f}h ago" if x["released"] else f"in {x['minutes_until'] / 60:.1f}h"
-        lines.append(
-            f"  - [{x['impact']}] {x['country']} {x['title']} · {when} · forecast {x['forecast'] or 'n/a'} vs previous {x['previous'] or 'n/a'}"
-            f" → expectation implies gold {x['gold_bias']}"
-        )
+        if x.get("surprise") is not None:
+            lines.append(
+                f"  - [{x['impact']}] {x['country']} {x['title']} · {when} · ACTUAL {x['actual']} vs forecast {x['forecast'] or 'n/a'}"
+                f" (surprise {x['surprise']:+}) → surprise implies gold {x['gold_bias']} (weighted 2x)"
+            )
+        else:
+            lines.append(
+                f"  - [{x['impact']}] {x['country']} {x['title']} · {when} · forecast {x['forecast'] or 'n/a'} vs previous {x['previous'] or 'n/a'}"
+                f" → expectation implies gold {x['gold_bias']}"
+            )
     return (
         "\n".join(lines)
         + f"\nAggregate expectation bias for gold: {macro['gold_bias']} (score {macro['bias_score']:+.2f}). Event risk: {macro['event_risk']}."
         + "\nRules of thumb: hotter CPI/PCE/PPI, strong NFP/wages, hawkish Fed → USD up, real yields up → gold DOWN."
         + " Softer inflation, weak jobs, rising unemployment/claims, dovish Fed → gold UP."
         + " If a HIGH-impact release is < 4h away, cut confidence and prefer tighter validity or HOLD — the print can invalidate any technical setup."
+        + " A fresh ACTUAL surprise (released < 24h) is the strongest macro signal — trade WITH it unless price has fully reversed."
+        + _actuals_line(macro)
     )

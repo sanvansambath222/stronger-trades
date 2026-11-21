@@ -46,15 +46,50 @@ const consensusStyle = {
     MAJORITY: { label: "MAJORITY", color: "#7AB8FF", bg: "rgba(122,184,255,0.10)", Icon: CheckCircle2 },
 };
 
+function MacroExtras({ macro }) {
+    const y = macro.yields;
+    const surprises = macro.surprises || [];
+    return (
+        <div className="space-y-1.5 mb-2">
+            {surprises.map((x, i) => (
+                <div
+                    key={i}
+                    className="px-2 py-1.5 rounded-sm text-[11px] border"
+                    style={{ borderColor: `${sentimentColor(x.gold_bias)}66`, background: `${sentimentColor(x.gold_bias)}12` }}
+                    data-testid={`macro-surprise-${i}`}
+                >
+                    <span className="font-mono font-bold" style={{ color: sentimentColor(x.gold_bias) }}>SURPRISE</span>{" "}
+                    <span className="text-white">{x.title}</span>{" "}
+                    <span className="font-mono text-gray-300">actual {x.actual} vs {x.forecast} fcst → gold {x.gold_bias.toLowerCase()}</span>
+                </div>
+            ))}
+            {y && (
+                <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] font-mono text-gray-400" data-testid="macro-yields">
+                    {y.nominal_10y != null && (
+                        <span>US10Y {y.nominal_10y.toFixed(2)}% <span style={{ color: y.nominal_10y_change_bp > 0 ? "#FF2A55" : "#00B86B" }}>{y.nominal_10y_change_bp > 0 ? "+" : ""}{y.nominal_10y_change_bp}bp</span></span>
+                    )}
+                    {y.real_10y != null && (
+                        <span>Real {y.real_10y.toFixed(2)}% <span style={{ color: y.real_10y_5d_change_bp > 0 ? "#FF2A55" : "#00B86B" }}>{y.real_10y_5d_change_bp > 0 ? "+" : ""}{y.real_10y_5d_change_bp}bp 5d</span></span>
+                    )}
+                    <span>Yields → gold <span style={{ color: sentimentColor(y.gold_bias) }}>{y.gold_bias}</span></span>
+                </div>
+            )}
+            {macro.fred_enabled === false && (
+                <div className="text-[9px] font-mono text-gray-600 uppercase tracking-[0.1em]">Official actuals off · add FRED key</div>
+            )}
+        </div>
+    );
+}
+
 function MacroPanel({ macro }) {
     if (!macro) return null;
     const riskColor = macro.event_risk === "HIGH" ? "#FF2A55" : macro.event_risk === "ELEVATED" ? "#D4AF37" : "#00B86B";
     const events = (macro.events || []).filter((e) => e.impact !== "Low").slice(0, 5);
     return (
         <div className="border border-[#262626] bg-[#0F0F0F] rounded-sm p-3" data-testid="macro-panel">
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-2">
                 <div className="text-[10px] font-mono text-[#D4AF37] uppercase tracking-[0.2em] flex items-center gap-1.5">
-                    <Newspaper className="w-3 h-3" /> Macro Calendar · CPI / NFP / Fed
+                    <Newspaper className="w-3 h-3" /> Macro · CPI / NFP / Fed
                 </div>
                 <div className="flex items-center gap-1.5 text-[9px] font-mono uppercase tracking-[0.1em]">
                     <span style={{ color: sentimentColor(macro.gold_bias) }} data-testid="macro-bias">Gold {macro.gold_bias}</span>
@@ -62,6 +97,7 @@ function MacroPanel({ macro }) {
                     <span style={{ color: riskColor }} data-testid="macro-risk">Risk {macro.event_risk}</span>
                 </div>
             </div>
+            <MacroExtras macro={macro} />
             {events.length === 0 ? (
                 <div className="text-[11px] text-gray-500">No high/medium-impact USD releases in the last 24h or next 48h.</div>
             ) : (
@@ -73,6 +109,7 @@ function MacroPanel({ macro }) {
                                 {e.title}
                             </span>
                             <span className="font-mono text-[10px] text-gray-500 whitespace-nowrap">
+                                {e.actual ? <span className="text-white">A {e.actual} · </span> : null}
                                 {e.forecast || "—"} vs {e.previous || "—"} ·{" "}
                                 <span style={{ color: sentimentColor(e.gold_bias) }}>{e.released ? "out" : `${(e.minutes_until / 60).toFixed(1)}h`}</span>
                             </span>
@@ -171,7 +208,25 @@ function StepRow({ icon: Icon, title, text, testId }) {
     );
 }
 
-export default function AISignalCard({ signal, loading, error, onRegenerate, onDeepAI, onCouncil, engine, aiSettings, withRiskTeam = false, liveProgress = [], confidenceThreshold = 0, strongOnly = false }) {
+function PositionSize({ signal, risk }) {
+    const s = risk?.settings;
+    if (!s || !signal || signal.action === "HOLD") return null;
+    const dist = Math.abs(signal.entry - signal.stop_loss);
+    if (!dist) return null;
+    const riskUsd = (s.account_balance * s.risk_pct) / 100;
+    const lot = riskUsd / (dist * 100);
+    return (
+        <div className="flex items-center justify-between px-3 py-2 border border-[#D4AF37]/30 bg-[#D4AF37]/5 rounded-sm" data-testid="position-size">
+            <div className="text-[10px] font-mono text-[#D4AF37] uppercase tracking-[0.15em]">Position size</div>
+            <div className="font-mono text-xs text-white">
+                <span className="font-bold text-sm" data-testid="position-size-lot">{lot.toFixed(2)} lot</span>
+                <span className="text-gray-500"> · risk ${riskUsd.toFixed(0)} ({s.risk_pct}%) · SL {dist.toFixed(2)}</span>
+            </div>
+        </div>
+    );
+}
+
+export default function AISignalCard({ signal, loading, error, onRegenerate, onDeepAI, onCouncil, engine, aiSettings, withRiskTeam = false, liveProgress = [], riskStatus = null, confidenceThreshold = 0, strongOnly = false }) {
     const action = (signal?.action || "HOLD").toUpperCase();
     const style = actionStyle[action] || actionStyle.HOLD;
     const Icon = style.Icon;
@@ -344,6 +399,15 @@ export default function AISignalCard({ signal, loading, error, onRegenerate, onD
                         </div>
                     )}
 
+                    {riskStatus?.locked && signal.action !== "HOLD" && (
+                        <div
+                            className="px-3 py-2 border-2 border-[#FF2A55] bg-[#FF2A55]/15 rounded-sm text-[10px] font-mono uppercase tracking-[0.15em] text-[#FF2A55]"
+                            data-testid="risk-locked-banner"
+                        >
+                            Daily loss limit hit — do not take this {signal.action}. EA is paused until 00:00 UTC.
+                        </div>
+                    )}
+
                     {/* Below-threshold warning */}
                     {belowThreshold && (
                         <div
@@ -495,6 +559,8 @@ export default function AISignalCard({ signal, loading, error, onRegenerate, onD
                             </div>
                         </div>
                     </div>
+
+                    <PositionSize signal={signal} risk={riskStatus} />
 
                     {slMethod && (
                         <div
